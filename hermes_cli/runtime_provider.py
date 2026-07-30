@@ -356,7 +356,20 @@ def _copilot_runtime_api_mode(
 ) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
+    # An explicit target_model outranks a persisted api_mode pin. The pin
+    # describes the model it was configured FOR (typically model.default); a
+    # caller that names a different model — a /model switch, a rehydrated
+    # session override, an MoA slot, a fallback — is telling us the pin does
+    # not apply. Copilot splits its catalog across two wire protocols
+    # (GPT-5.x Responses-only, Claude chat-completions-only), so letting a
+    # Claude-shaped pin ride along with a GPT-5 override yields
+    # 400 "not accessible via the /chat/completions endpoint" on every turn.
+    # With no target_model the pin still wins — unchanged legacy behaviour.
+    if (
+        configured_mode
+        and not (target_model or "").strip()
+        and _provider_supports_explicit_api_mode("copilot", configured_provider)
+    ):
         return configured_mode
 
     # Use the model being resolved for this runtime, not the persisted global

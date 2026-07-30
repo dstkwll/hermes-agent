@@ -2460,14 +2460,25 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
-    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+def _resolve_runtime_agent_kwargs_for_provider(
+    provider: str, target_model: Optional[str] = None
+) -> dict:
+    """Resolve runtime credentials for a specific provider (e.g. from channel override).
+
+    ``target_model`` must be supplied whenever the caller already knows which
+    model the resolved runtime will run. Provider-specific ``api_mode`` derivation
+    (notably Copilot, where GPT-5.x is Responses-only and Claude is
+    chat-completions-only) otherwise falls back to the *global* ``model.default``
+    and can hand back a mode belonging to a completely different model.
+    """
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = resolve_runtime_provider(
+            requested=provider, target_model=target_model
+        )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {
@@ -6912,8 +6923,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if ch.model:
                     model = ch.model
                 if ch.provider:
+                    # Pass the channel's explicit model so provider-specific
+                    # api_mode derivation resolves for the model this channel
+                    # will actually run, not the global model.default.
                     runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                        ch.provider
+                        ch.provider, target_model=ch.model or None
                     )
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Only adopt the provider's bundled model when the override
@@ -22465,8 +22479,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (e.g. credentials were removed since the switch) keep the
             # credential-less override — _resolve_session_agent_runtime falls
             # back to env-based resolution and applies model/provider on top.
+            #
+            # Pass the persisted MODEL through: api_mode is deliberately not
+            # persisted (sanitize_model_override drops it) and is re-derived
+            # here. Resolving for the provider alone makes that derivation fall
+            # back to the global model.default, which stamps a foreign model's
+            # api_mode onto this override — e.g. a session pinned to
+            # gpt-5.6-sol (Responses-only) rehydrated as chat_completions from
+            # a Claude default, then 400s "not accessible via the
+            # /chat/completions endpoint" on every turn, unfixable by restart
+            # because restarting is what re-runs this path.
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(
+                    provider, target_model=persisted.get("model")
+                )
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
