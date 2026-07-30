@@ -456,6 +456,33 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _canonical_provider_name(provider: Any) -> Optional[str]:
+    """Canonicalize a configured provider slug to Hermes' internal id.
+
+    Config accepts provider *aliases* (``github-copilot``, ``github``,
+    ``zhipu``, ``google`` …) but every runtime guard in the agent compares
+    ``agent.provider`` against the **canonical** id literally — e.g.::
+
+        if agent.provider == "copilot" and status_code == 401:   # 401 re-mint
+        if self.provider != "copilot": return False              # 400 recovery
+
+    Before this normalization, ``model.provider: github-copilot`` in
+    config.yaml left ``agent.provider == "github-copilot"``, so both Copilot
+    credential self-heals silently no-opped and a routine
+    ``401 IDE token expired`` became a fatal "Non-retryable client error"
+    that only a gateway restart cleared (incident 2026-07-30).
+
+    Returns ``None`` for empty/non-string input so the caller's
+    ``provider_name is None`` base-URL auto-detection branches are preserved
+    (``normalize_provider`` alone would coerce empty input to ``openrouter``).
+    """
+    if not isinstance(provider, str) or not provider.strip():
+        return None
+    from hermes_cli.models import normalize_provider
+
+    return normalize_provider(provider)
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -614,7 +641,7 @@ def init_agent(
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
     agent.base_url = base_url or ""
-    provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+    provider_name = _canonical_provider_name(provider)
     agent.provider = provider_name or ""
     agent.requested_provider = (
         requested_provider.strip().lower()
