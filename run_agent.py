@@ -6961,11 +6961,28 @@ class AIAgent:
         else:
             requested_effort = "medium"
 
-        if requested_effort == "xhigh" and "xhigh" not in supported_efforts and "high" in supported_efforts:
-            requested_effort = "high"
-        elif requested_effort not in supported_efforts:
-            if requested_effort == "minimal" and "low" in supported_efforts:
-                requested_effort = "low"
+        # Effort ladder, weakest → strongest. An unsupported level must clamp
+        # to the nearest supported level *in the same direction*, never fall
+        # back to "medium" — "ultra" landing on medium made the strongest
+        # setting weaker than "high" (silent downgrade).
+        _EFFORT_LADDER = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+
+        if requested_effort not in supported_efforts:
+            if requested_effort in _EFFORT_LADDER:
+                idx = _EFFORT_LADDER.index(requested_effort)
+                # Walk DOWN toward weaker levels for an over-ceiling request
+                # (ultra/max/xhigh), which preserves "stronger is stronger".
+                downgrade = next(
+                    (lvl for lvl in reversed(_EFFORT_LADDER[:idx]) if lvl in supported_efforts),
+                    None,
+                )
+                # Only if nothing weaker exists do we walk UP (e.g. "minimal"
+                # on a model whose floor is "low").
+                upgrade = next(
+                    (lvl for lvl in _EFFORT_LADDER[idx + 1:] if lvl in supported_efforts),
+                    None,
+                )
+                requested_effort = downgrade or upgrade or supported_efforts[0]
             elif "medium" in supported_efforts:
                 requested_effort = "medium"
             else:

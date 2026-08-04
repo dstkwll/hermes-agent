@@ -3998,9 +3998,15 @@ def run_conversation(
                 if (
                     _is_copilot_provider(agent)
                     and status_code == 401
-                    and not _retry.copilot_auth_retry_attempted
+                    and _retry.may_refresh_copilot_auth()
                 ):
-                    _retry.copilot_auth_retry_attempted = True
+                    # Bounded, not single-shot: Copilot's exchanged IDE token
+                    # expires on a ~30-minute clock, so one long attempt can
+                    # straddle the boundary and 401 twice. The old one-shot
+                    # boolean made the second 401 fatal and forced a gateway
+                    # restart. `_try_refresh_copilot_client_credentials` evicts
+                    # the cached JWT and re-mints, so each spend is meaningful.
+                    _retry.record_copilot_auth_refresh()
                     if agent._try_refresh_copilot_client_credentials():
                         agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
                         continue

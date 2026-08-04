@@ -44,7 +44,19 @@ class TurnRetryState:
     anthropic_auth_retry_attempted: bool = False
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
-    copilot_auth_retry_attempted: bool = False
+    # Copilot's *exchanged* IDE token has a short (~30 min) TTL, so a 401 here
+    # is CLOCK-driven, not credential-driven: a single long attempt whose retry
+    # loop straddles the expiry boundary can legitimately see 401 twice. A
+    # one-shot boolean made the second 401 fatal — the turn aborted as
+    # non-retryable and only a *gateway restart* recovered it (a cold process
+    # re-runs the exchange). This is therefore a small bounded BUDGET rather
+    # than a boolean. It stays bounded so a permanently-bad credential still
+    # fails fast instead of spinning. Contrast with
+    # ``copilot_stale_cred_retry_attempted`` below, which guards a
+    # model-availability 400 and MUST remain single-shot: re-asking for a model
+    # the integrator genuinely lacks would loop forever.
+    copilot_auth_refresh_count: int = 0
+    max_copilot_auth_refreshes: int = 3
     # Copilot surfaces a stale/degraded credential as a 400
     # ``model_not_available_for_integrator`` / ``model_not_supported`` instead
     # of a clean 401 (e.g. a raw OAuth token seeded when the token exchange
@@ -85,6 +97,18 @@ class TurnRetryState:
     # loop must append a role-safe checkpoint + user message, rebuild the API
     # payload, and retry the same logical iteration.
     restart_with_redirected_messages: bool = False
+
+    def may_refresh_copilot_auth(self) -> bool:
+        """True while this attempt may still re-mint an expired Copilot IDE token.
+
+        Bounded rather than one-shot because the underlying 401 is driven by a
+        ~30-minute token TTL, not by a bad credential — see the field comment.
+        """
+        return self.copilot_auth_refresh_count < self.max_copilot_auth_refreshes
+
+    def record_copilot_auth_refresh(self) -> None:
+        """Spend one unit of the Copilot 401 refresh budget."""
+        self.copilot_auth_refresh_count += 1
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.
